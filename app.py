@@ -28,7 +28,7 @@ URL_LEFCOM = "https://lefcom.solucionesig.com.co/entrada.php"
 
 
 def iniciar_driver(folder_descargas):
-    """Configura Google Chrome en modo Headless (sin pantalla) para entornos de nube."""
+    """Configura Google Chrome en modo Headless para entornos Linux de Streamlit Cloud."""
     chrome_options = Options()
     chrome_options.add_argument("--headless=new")
     chrome_options.add_argument("--no-sandbox")
@@ -36,7 +36,6 @@ def iniciar_driver(folder_descargas):
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--window-size=1920,1080")
     
-    # Descargas automáticas directas sin ventana de confirmación
     prefs = {
         "download.default_directory": folder_descargas,
         "download.prompt_for_download": False,
@@ -45,13 +44,20 @@ def iniciar_driver(folder_descargas):
     }
     chrome_options.add_experimental_option("prefs", prefs)
 
-    try:
-        # Intenta usar el chromedriver preinstalado de Linux en Streamlit Cloud
-        service = Service("/usr/bin/chromedriver")
-        return webdriver.Chrome(service=service, options=chrome_options)
-    except Exception:
-        # Respaldo para cuando ejecutes el script en tu computador local
-        return webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
+    # Rutas estándar donde Debian/Ubuntu instala chromium-driver
+    rutas_driver = [
+        "/usr/bin/chromedriver",
+        "/usr/lib/chromium-browser/chromedriver",
+        "/usr/lib/chromium/chromedriver"
+    ]
+    
+    for ruta in rutas_driver:
+        if os.path.exists(ruta):
+            service = Service(ruta)
+            return webdriver.Chrome(service=service, options=chrome_options)
+            
+    # Fallback automático con webdriver-manager si no encuentra las rutas del sistema
+    return webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
 
 
 def login_lefcom(driver, usuario, password):
