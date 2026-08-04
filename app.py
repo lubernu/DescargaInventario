@@ -2,6 +2,7 @@ import os
 import time
 import glob
 import pandas as pd
+import numpy as np
 import streamlit as st
 
 from selenium import webdriver
@@ -143,6 +144,30 @@ def obtener_y_procesar_inventario(usuario, password):
 
         for col in df.select_dtypes(include="object").columns:
             df[col] = df[col].astype(str).str.strip()
+
+        # ====================================================
+        # CLASIFICACIÓN DE MARCA SEGÚN REGLAS DE NEGOCIO
+        # ====================================================
+        if 'telefono' in df.columns and 'grupo' in df.columns:
+            primera_palabra = df['telefono'].str.split().str[0]   # NaN si está vacío
+            segunda_palabra = df['telefono'].str.split().str[1]
+
+            condiciones = [
+                df['grupo'].eq('EQUIPOS EN CONSIGNACION'),
+                df['grupo'].eq('KIT PREPAGO INDIVIDUAL'),
+                df['grupo'].str.startswith('SIM', na=False),
+                df['grupo'].eq('ELECTRODOMESTICOS')
+            ]
+            valores = [
+                primera_palabra,
+                segunda_palabra,
+                'SIM',
+                'ELECTRODOMESTICOS'
+            ]
+
+            # asigna la primera condición verdadera, NaN si ninguna coincide
+            df['marca'] = np.select(condiciones, valores, default=np.nan)
+        # ====================================================
 
         limpiar_carpeta_descargas(DOWNLOAD_DIR)
         return df
