@@ -223,11 +223,12 @@ with st.spinner("Conectando con LEFCOM y procesando archivo..."):
         st.markdown("---")
 
         # --- SECCIÓN DE PESTAÑAS DETALLADAS ---
-        tab_tabla, tab_bodega, tab_grupo, tab_prestamos = st.tabs([
+        tab_tabla, tab_bodega, tab_grupo, tab_prestamos, tab_marca = st.tabs([
             "📋 Tabla Completa", 
             "🏢 Por Bodega", 
             "📦 Por Grupo", 
-            "🤝 Préstamos"
+            "🤝 Préstamos",
+            "🔖 Por Marca"
         ])
 
         # 1. Pestaña Tabla Completa
@@ -256,11 +257,36 @@ with st.spinner("Conectando con LEFCOM y procesando archivo..."):
             if 'estado' in df_filtrado.columns:
                 df_prestados = df_filtrado[df_filtrado['estado'] == 'Prestado']
                 if not df_prestados.empty:
-                    # Columnas clave para controlar préstamos
                     cols_prestamo = [c for c in ['bodega', 'telefono', 'serial', 'nombres', 'apellidos', 'fec_vencimiento'] if c in df_prestados.columns]
                     st.dataframe(df_prestados[cols_prestamo], use_container_width=True, hide_index=True)
                 else:
                     st.info("No hay equipos prestados en el filtro seleccionado.")
+
+        # 5. Pestaña Por Marca (NUEVA)
+        with tab_marca:
+            st.markdown("### Filtrar por Marca")
+            if 'marca' in df_filtrado.columns:
+                # Lista de marcas disponibles (sin nulos) ordenadas
+                marcas_disponibles = sorted(df_filtrado['marca'].dropna().unique())
+                if marcas_disponibles:
+                    marca_seleccionada = st.selectbox("Selecciona una marca:", marcas_disponibles)
+                    df_marca = df_filtrado[df_filtrado['marca'] == marca_seleccionada]
+                    total_referencias = df_marca['telefono'].nunique()
+                    total_registros = len(df_marca)
+                    
+                    col1, col2 = st.columns(2)
+                    col1.metric("Cantidad de registros", total_registros)
+                    col2.metric("Referencias únicas (modelos)", total_referencias)
+                    
+                    st.subheader(f"📱 Modelos de {marca_seleccionada}")
+                    # Mostrar tabla con referencias únicas y sus cantidades
+                    resumen_modelos = df_marca['telefono'].value_counts().reset_index()
+                    resumen_modelos.columns = ['Teléfono', 'Cantidad']
+                    st.dataframe(resumen_modelos, use_container_width=True, hide_index=True)
+                else:
+                    st.info("No hay marcas clasificadas en los datos actuales.")
+            else:
+                st.warning("La columna 'marca' no está disponible.")
 
         # --- BOTÓN DESCARGAR A CELULAR ---
         st.markdown("---")
