@@ -167,6 +167,30 @@ def obtener_y_procesar_inventario(usuario, password):
 
             # asigna la primera condición verdadera, NaN si ninguna coincide
             df['marca'] = np.select(condiciones, valores, default=np.nan)
+            
+            # ====================================================
+            # NORMALIZACIÓN Y CONSOLIDACIÓN DE MARCAS (CORRECCIÓN)
+            # ====================================================
+            # 1. Estandarizar a mayúsculas y quitar espacios extra
+            df['marca'] = df['marca'].astype(str).str.upper().str.strip()
+            
+            # 2. Diccionario de mapeo para unificar errores comunes de digitación
+            correcciones_marcas = {
+                'SAMSUN': 'SAMSUNG',
+                'SAMSUMG': 'SAMSUNG',
+                'SAMSUNGS': 'SAMSUNG',
+                'APP': 'APPLE',
+                'IPHONNE': 'APPLE',
+                'IPHONE': 'APPLE',
+                'MOTO': 'MOTOROLA',
+                'XIAOM': 'XIAOMI'
+            }
+            
+            # 3. Reemplazar coincidencias exactas
+            df['marca'] = df['marca'].replace(correcciones_marcas)
+            
+            # 4. Limpiar valores que eran originalmente nulos pero se convirtieron en string 'NAN'
+            df['marca'] = df['marca'].replace({'NAN': np.nan, '': np.nan, 'NONE': np.nan})
         # ====================================================
 
         limpiar_carpeta_descargas(DOWNLOAD_DIR)
@@ -262,7 +286,7 @@ with st.spinner("Conectando con LEFCOM y procesando archivo..."):
                 else:
                     st.info("No hay equipos prestados en el filtro seleccionado.")
 
-        # 5. Pestaña Por Marca (NUEVA)
+        # 5. Pestaña Por Marca
         with tab_marca:
             st.markdown("### Filtrar por Marca")
             if 'marca' in df_filtrado.columns:
