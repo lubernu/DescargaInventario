@@ -18,7 +18,8 @@ from webdriver_manager.chrome import ChromeDriverManager
 st.set_page_config(
     page_title="Dashboard Inventario LEFCOM",
     page_icon="📱",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded",
 )
 
 DOWNLOAD_DIR = os.path.abspath("./downloads")
@@ -26,6 +27,10 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 URL_LEFCOM = "https://lefcom.solucionesig.com.co/entrada.php"
 
+
+# ================================================================
+# BACKEND (lógica de automatización y procesamiento, sin cambios)
+# ================================================================
 
 def limpiar_carpeta_descargas(folder):
     """Elimina todos los archivos temporales para evitar acumular residuos en el servidor."""
@@ -47,25 +52,25 @@ def iniciar_driver(folder_descargas):
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--window-size=1920,1080")
-    
+
     prefs = {
         "download.default_directory": folder_descargas,
         "download.prompt_for_download": False,
         "download.directory_upgrade": True,
-        "safebrowsing.enabled": True
+        "safebrowsing.enabled": True,
     }
     chrome_options.add_experimental_option("prefs", prefs)
 
     rutas_driver = [
         "/usr/bin/chromedriver",
         "/usr/lib/chromium-browser/chromedriver",
-        "/usr/lib/chromium/chromedriver"
+        "/usr/lib/chromium/chromedriver",
     ]
-    
+
     for ruta in rutas_driver:
         if os.path.exists(ruta):
             return webdriver.Chrome(service=Service(ruta), options=chrome_options)
-            
+
     return webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
 
 
@@ -97,16 +102,16 @@ def login_lefcom(driver, usuario, password):
     time.sleep(2)
 
 
-# --- CACHÉ CONFIGURADO A 6 HORA (21600 SEGUNDOS) ---
+# --- CACHÉ CONFIGURADO A 6 HORAS (21600 SEGUNDOS) ---
 @st.cache_data(ttl=21600, show_spinner=False)
 def obtener_y_procesar_inventario(usuario, password):
     limpiar_carpeta_descargas(DOWNLOAD_DIR)
     driver = iniciar_driver(DOWNLOAD_DIR)
     wait = WebDriverWait(driver, 25)
-    
+
     try:
         login_lefcom(driver, usuario, password)
-        
+
         try:
             driver.execute_script("irmenu_or('reportes/reporte_equipos_sin_ventas.php');")
         except Exception:
@@ -126,55 +131,45 @@ def obtener_y_procesar_inventario(usuario, password):
 
         patron_busqueda = os.path.join(DOWNLOAD_DIR, "Equipos_sin_ventas*")
         archivos_encontrados = glob.glob(patron_busqueda)
-        
+
         if not archivos_encontrados:
             raise FileNotFoundError("No se encontró el archivo exportado en la carpeta de descargas.")
 
         archivo_mas_reciente = max(archivos_encontrados, key=os.path.getctime)
 
-        # Cargar con Pandas especificando el separador Pipe '|'
         try:
             df = pd.read_csv(archivo_mas_reciente, sep='|', encoding='utf-8', on_bad_lines='skip')
         except Exception:
             df = pd.read_excel(archivo_mas_reciente)
 
-        # Normalizar y limpiar textos
         df.columns = df.columns.str.strip()
         df = df.dropna(how="all")
 
         for col in df.select_dtypes(include="object").columns:
             df[col] = df[col].astype(str).str.strip()
 
-        # ====================================================
         # CLASIFICACIÓN DE MARCA SEGÚN REGLAS DE NEGOCIO
-        # ====================================================
         if 'telefono' in df.columns and 'grupo' in df.columns:
-            primera_palabra = df['telefono'].str.split().str[0]   # NaN si está vacío
+            primera_palabra = df['telefono'].str.split().str[0]
             segunda_palabra = df['telefono'].str.split().str[1]
 
             condiciones = [
                 df['grupo'].eq('EQUIPOS EN CONSIGNACION'),
                 df['grupo'].eq('KIT PREPAGO INDIVIDUAL'),
                 df['grupo'].str.startswith('SIM', na=False),
-                df['grupo'].eq('ELECTRODOMESTICOS')
+                df['grupo'].eq('ELECTRODOMESTICOS'),
             ]
             valores = [
                 primera_palabra,
                 segunda_palabra,
                 'SIM',
-                'ELECTRODOMESTICOS'
+                'ELECTRODOMESTICOS',
             ]
 
-            # asigna la primera condición verdadera, NaN si ninguna coincide
             df['marca'] = np.select(condiciones, valores, default=np.nan)
-            
-            # ====================================================
-            # NORMALIZACIÓN Y CONSOLIDACIÓN DE MARCAS (CORRECCIÓN)
-            # ====================================================
-            # 1. Estandarizar a mayúsculas y quitar espacios extra
+
             df['marca'] = df['marca'].astype(str).str.upper().str.strip()
-            
-            # 2. Diccionario de mapeo para unificar errores comunes de digitación
+
             correcciones_marcas = {
                 'SAMSUN': 'SAMSUNG',
                 'SAMSUMG': 'SAMSUNG',
@@ -183,15 +178,12 @@ def obtener_y_procesar_inventario(usuario, password):
                 'IPHONNE': 'APPLE',
                 'IPHONE': 'APPLE',
                 'MOTO': 'MOTOROLA',
-                'XIAOM': 'XIAOMI'
+                'XIAOM': 'XIAOMI',
             }
-            
-            # 3. Reemplazar coincidencias exactas
+
             df['marca'] = df['marca'].replace(correcciones_marcas)
-            
-            # 4. Limpiar valores que eran originalmente nulos pero se convirtieron en string 'NAN'
+
             df['marca'] = df['marca'].replace({'NAN': np.nan, '': np.nan, 'NONE': np.nan})
-        # ====================================================
 
         limpiar_carpeta_descargas(DOWNLOAD_DIR)
         return df
@@ -200,16 +192,253 @@ def obtener_y_procesar_inventario(usuario, password):
         driver.quit()
 
 
-# --- INTERFAZ STREAMLIT ---
+# ================================================================
+# DISEÑO / TEMA
+# ================================================================
 
-st.title("📱 Dashboard de Inventario LEFCOM")
-st.caption("Control de Equipos Sin Ventas en Tiempo Real")
+CSS = """
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
 
-# Botón para forzar actualización
-if st.button("🔄 Actualizar Inventario"):
-    st.cache_data.clear()
+#MainMenu {visibility: hidden;}
+footer {visibility: hidden;}
+[data-testid="stHeader"] {background: transparent; height: 0px;}
 
-# Credenciales
+html, body, [class*="css"], [data-testid="stAppViewContainer"] {
+    font-family: 'Plus Jakarta Sans', 'Segoe UI', sans-serif;
+}
+
+[data-testid="stAppViewContainer"] {
+    background: #f4f6fb;
+}
+
+h1, h2, h3, h4 {color: #0f1b3d; letter-spacing: -0.02em;}
+
+/* ---------- SIDEBAR ---------- */
+[data-testid="stSidebar"] {
+    background: #0f1b3d;
+    border-right: 1px solid rgba(255,255,255,.06);
+}
+[data-testid="stSidebar"] * {color: #e8ecf5;}
+[data-testid="stSidebar"] label p {color: #8fa3d8 !important; font-weight: 600;}
+[data-testid="stSidebar"] [data-testid="stTextInput"] input {
+    background: #16254f; border: 1px solid #24345f; color: #fff; border-radius: 10px;
+}
+[data-testid="stSidebar"] [data-testid="stTextInput"] input::placeholder {color: #8a97b8;}
+[data-testid="stSidebar"] ::placeholder {color: #8a97b8;}
+[data-testid="stSidebar"] [data-baseweb="select"] > div {
+    background: #16254f; border-color: #24345f; border-radius: 10px;
+}
+[data-testid="stSidebar"] [data-baseweb="menu"] [role="option"] {color: #0f1b3d;}
+[data-testid="stSidebar"] hr {border-color: rgba(255,255,255,.08);}
+[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p {color: #b9c7e8;}
+
+.sidebar-brand {
+    padding: 4px 2px 18px;
+    border-bottom: 1px solid rgba(255,255,255,.09);
+    margin-bottom: 14px;
+}
+.sidebar-brand .logo {
+    font-size: 1.9rem;
+}
+.sidebar-brand h3 {
+    color: #fff; font-size: 1.15rem; font-weight: 800; margin: 8px 0 2px;
+}
+.sidebar-brand p {
+    color: #8fa3d8; font-size: .75rem; margin: 0; letter-spacing: .04em;
+}
+.sidebar-section-title {
+    font-size: .7rem; font-weight: 700; text-transform: uppercase;
+    letter-spacing: .14em; color: #8fa3d8; margin: 8px 0 6px;
+}
+
+/* ---------- HERO ---------- */
+.hero {
+    position: relative;
+    overflow: hidden;
+    background: linear-gradient(135deg, #0b1230 0%, #12204a 45%, #2563eb 130%);
+    border-radius: 22px;
+    padding: 34px 42px;
+    color: #fff;
+    margin-bottom: 20px;
+    box-shadow: 0 14px 44px rgba(15,27,61,.18);
+}
+.hero::after {
+    content: "";
+    position: absolute;
+    top: -70%; right: -8%;
+    width: 440px; height: 440px;
+    background: radial-gradient(circle, rgba(37,99,235,.4), transparent 60%);
+}
+.hero-badge {
+    display: inline-block;
+    font-size: .72rem; font-weight: 700; letter-spacing: .16em;
+    text-transform: uppercase;
+    padding: 6px 14px; border-radius: 999px;
+    background: rgba(255,255,255,.12); color: #c7d6ff;
+    margin-bottom: 16px;
+}
+.hero h1 {
+    color: #fff; font-size: 2.05rem; font-weight: 800;
+    margin: 0 0 8px; letter-spacing: -.02em;
+}
+.hero p {
+    color: #b9c7e8; font-size: 1rem; margin: 0 0 22px; max-width: 760px;
+}
+.hero-meta {display: flex; gap: 34px; flex-wrap: wrap;}
+.hero-meta-item b {display: block; font-size: 1.25rem; color: #fff; font-weight: 800;}
+.hero-meta-item span {font-size: .72rem; color: #8fa3d8; text-transform: uppercase; letter-spacing: .09em;}
+
+/* ---------- KPI CARDS ---------- */
+.kpi-card {
+    background: #ffffff;
+    border: 1px solid #e9edf5;
+    border-radius: 18px;
+    padding: 18px 20px;
+    box-shadow: 0 6px 24px rgba(15,27,61,.05);
+    border-top: 4px solid var(--accent);
+    margin-bottom: 12px;
+    transition: transform .15s ease, box-shadow .15s ease;
+}
+.kpi-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 12px 30px rgba(15,27,61,.10);
+}
+.kpi-encabezado {display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;}
+.kpi-icono {font-size: 1.6rem; line-height: 1;}
+.kpi-sub {font-size: .7rem; color: #8a97b8; font-weight: 700; text-transform: uppercase; letter-spacing: .07em;}
+.kpi-valor {font-size: 2.15rem; font-weight: 800; color: #0f1b3d; line-height: 1;}
+.kpi-etiqueta {font-size: .83rem; color: #5b6b8c; font-weight: 600; margin-top: 8px;}
+
+/* ---------- SECCIONES / PANELES ---------- */
+.panel {
+    background: #ffffff;
+    border: 1px solid #e9edf5;
+    border-radius: 18px;
+    padding: 20px 24px;
+    box-shadow: 0 6px 24px rgba(15,27,61,.04);
+    margin-bottom: 16px;
+}
+.panel h3 {margin: 0 0 12px; font-size: 1.05rem; font-weight: 700;}
+
+/* ---------- TABS ---------- */
+.stTabs [data-baseweb="tab-list"] {gap: 8px; border-bottom: 1px solid #e4e9f2; padding-bottom: 2px;}
+.stTabs [data-baseweb="tab"] {
+    border-radius: 10px;
+    padding: 8px 18px;
+    background: #eef1f7;
+    color: #5b6b8c;
+    font-weight: 600;
+    border: 1px solid transparent;
+    transition: all .15s ease;
+}
+.stTabs [data-baseweb="tab"]:hover {color: #1d4ed8; background: #e6edff;}
+.stTabs [aria-selected="true"] {
+    background: #ffffff;
+    border-color: #d4deef;
+    color: #1d4ed8 !important;
+    box-shadow: 0 2px 10px rgba(15,27,61,.08);
+}
+
+/* ---------- BOTONES ---------- */
+.stButton > button {
+    border-radius: 12px;
+    font-weight: 600;
+    border: none;
+    padding: .55rem 1.2rem;
+    background: linear-gradient(135deg, #2563eb, #1d4ed8);
+    color: #ffffff;
+    box-shadow: 0 4px 14px rgba(37,99,235,.25);
+    transition: all .15s ease;
+}
+.stButton > button:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 8px 24px rgba(37,99,235,.38);
+    color: #ffffff;
+}
+div[data-testid="stDownloadButton"] button {
+    border-radius: 12px;
+    font-weight: 600;
+    border: 1.5px solid #2563eb;
+    color: #1d4ed8;
+    background: #eef4ff;
+}
+div[data-testid="stDownloadButton"] button:hover {background: #e0ebff; color: #1d4ed8;}
+
+/* ---------- TABLAS ---------- */
+[data-testid="stDataFrame"] {
+    border-radius: 14px;
+    overflow: hidden;
+    border: 1px solid #e9edf5;
+    box-shadow: 0 4px 18px rgba(15,27,61,.04);
+}
+
+/* ---------- SPINNER / TEXTO ---------- */
+[data-testid="stSpinner"] > div {border-color: #2563eb !important;}
+
+/* ---------- FOOTER ---------- */
+.footer {
+    margin-top: 30px;
+    padding-top: 16px;
+    border-top: 1px solid #e4e9f2;
+    text-align: center;
+    color: #8a97b8;
+    font-size: .8rem;
+}
+"""
+
+
+def inyectar_css():
+    st.markdown(f"<style>{CSS}</style>", unsafe_allow_html=True)
+
+
+def tarjeta_kpi(icono, etiqueta, valor, color, subtexto=""):
+    st.markdown(
+        f"""
+        <div class="kpi-card" style="--accent:{color}">
+            <div class="kpi-encabezado">
+                <span class="kpi-icono">{icono}</span>
+                <span class="kpi-sub">{subtexto}</span>
+            </div>
+            <div class="kpi-valor">{valor}</div>
+            <div class="kpi-etiqueta">{etiqueta}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+# ================================================================
+# INTERFAZ
+# ================================================================
+
+inyectar_css()
+
+# ---------- SIDEBAR ----------
+with st.sidebar:
+    st.markdown(
+        """
+        <div class="sidebar-brand">
+            <div class="logo">📱</div>
+            <h3>LEFCOM Inventory</h3>
+            <p>Control de equipos sin ventas</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown('<div class="sidebar-section-title">Panel de control</div>', unsafe_allow_html=True)
+
+    if st.button("🔄 Actualizar Inventario", use_container_width=True):
+        st.cache_data.clear()
+
+    query_telefono = st.text_input(
+        "🔍 Buscar teléfono o modelo",
+        placeholder="Ej: ZTE, 256GB, Motorola...",
+    )
+
+    st.caption("Los resultados se actualizan automáticamente cada 6 horas y con el botón de arriba.")
+
+# ---------- CREDENCIALES ----------
 try:
     user_cred = st.secrets["LEFCOM_USER"]
     pass_cred = st.secrets["LEFCOM_PASS"]
@@ -217,109 +446,259 @@ except Exception:
     st.error("Por favor configura tus credenciales LEFCOM_USER y LEFCOM_PASS en los Secrets de Streamlit.")
     st.stop()
 
-# Carga de Datos
+# ---------- HERO ----------
+st.markdown(
+    f"""
+    <div class="hero">
+        <span class="hero-badge">Sistema LEFCOM · Tiempo Real</span>
+        <h1>Inventario de Equipos Sin Ventas</h1>
+        <p>Control centralizado de bodegas, marcas, grupos y préstamos. Busca por teléfono o modelo
+        y descarga el filtro directamente en tu celular.</p>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+# ---------- CARGA DE DATOS ----------
 with st.spinner("Conectando con LEFCOM y procesando archivo..."):
     try:
         df_raw = obtener_y_procesar_inventario(user_cred, pass_cred)
-        
-        # --- BUSCADOR POR TELÉFONO / MODELO ---
-        st.subheader("🔍 Buscador de Equipos")
-        query_telefono = st.text_input("Escribe el nombre o palabra clave del Teléfono/Modelo (ej: ZTE, Motorola, 256GB):", "")
-        
-        df_filtrado = df_raw.copy()
-        
-        if query_telefono.strip():
-            # Filtra por la columna 'telefono' a medida que escribes
-            df_filtrado = df_filtrado[df_filtrado['telefono'].str.contains(query_telefono, case=False, na=False)]
 
-        # --- SECCIÓN DE RESUMEN Y MÉTRICAS CLAVE ---
-        col_m1, col_m2, col_m3 = st.columns(3)
-        col_m1.metric("Total Registros Coincidentes", len(df_filtrado))
-        
-        # Conteo de prestados
-        prestados_cant = len(df_filtrado[df_filtrado['estado'] == 'Prestado']) if 'estado' in df_filtrado.columns else 0
-        col_m2.metric("Equipos Prestados", prestados_cant)
-        
-        # Total Bodegas activas
+        # ---------- FILTROS ADICIONALES (SIDEBAR) ----------
+        with st.sidebar:
+            st.markdown('<div class="sidebar-section-title">Filtros rápidos</div>', unsafe_allow_html=True)
+
+            filtro_marca = []
+            if 'marca' in df_raw.columns:
+                marcas_opciones = sorted(df_raw['marca'].dropna().unique().tolist())
+                if marcas_opciones:
+                    filtro_marca = st.multiselect(
+                        "🏷️ Marca",
+                        options=marcas_opciones,
+                        placeholder="Todas las marcas",
+                    )
+
+            filtro_estado = []
+            if 'estado' in df_raw.columns:
+                estados_opciones = sorted(df_raw['estado'].dropna().unique().tolist())
+                if estados_opciones:
+                    filtro_estado = st.multiselect(
+                        "📌 Estado",
+                        options=estados_opciones,
+                        placeholder="Todos los estados",
+                    )
+
+        # ---------- APLICAR FILTROS ----------
+        df_filtrado = df_raw.copy()
+
+        if query_telefono.strip():
+            df_filtrado = df_filtrado[
+                df_filtrado['telefono'].str.contains(query_telefono.strip(), case=False, na=False)
+            ]
+
+        if filtro_marca:
+            df_filtrado = df_filtrado[df_filtrado['marca'].isin(filtro_marca)]
+
+        if filtro_estado:
+            df_filtrado = df_filtrado[df_filtrado['estado'].isin(filtro_estado)]
+
+        # ---------- KPIs ----------
+        prestados_cant = (
+            int((df_filtrado['estado'] == 'Prestado').sum())
+            if 'estado' in df_filtrado.columns
+            else 0
+        )
         bodegas_cant = df_filtrado['bodega'].nunique() if 'bodega' in df_filtrado.columns else 0
-        col_m3.metric("Bodegas Involucradas", bodegas_cant)
+        marcas_cant = df_filtrado['marca'].nunique(dropna=True) if 'marca' in df_filtrado.columns else 0
+
+        k1, k2, k3, k4 = st.columns(4)
+        with k1:
+            tarjeta_kpi("🗂️", "Registros coincidentes", f"{len(df_filtrado):,}", "#2563eb", "Total equipos")
+        with k2:
+            tarjeta_kpi("🤝", "Equipos prestados", f"{prestados_cant:,}", "#f59e0b", "En préstamo")
+        with k3:
+            tarjeta_kpi("🏢", "Bodegas involucradas", f"{bodegas_cant:,}", "#8b5cf6", "Puntos de venta")
+        with k4:
+            tarjeta_kpi("🔖", "Marcas detectadas", f"{marcas_cant:,}", "#10b981", "Clasificación")
+
+        # ---------- FILA DE RESUMEN ----------
+        r1, r2 = st.columns(2)
+        with r1:
+            st.markdown(
+                """
+                <div class="panel">
+                    <h3>📊 Equipos por estado</h3>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            if 'estado' in df_filtrado.columns:
+                st.bar_chart(df_filtrado['estado'].value_counts(), color="#2563eb")
+            else:
+                st.info("Columna 'estado' no disponible.")
+        with r2:
+            st.markdown(
+                """
+                <div class="panel">
+                    <h3>🧭 Equipos por grupo</h3>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            if 'grupo' in df_filtrado.columns:
+                st.bar_chart(df_filtrado['grupo'].value_counts(), color="#8b5cf6")
+            else:
+                st.info("Columna 'grupo' no disponible.")
 
         st.markdown("---")
 
-        # --- SECCIÓN DE PESTAÑAS DETALLADAS ---
-        tab_tabla, tab_bodega, tab_grupo, tab_prestamos, tab_marca = st.tabs([
-            "📋 Tabla Completa", 
-            "🏢 Por Bodega", 
-            "📦 Por Grupo", 
-            "🤝 Préstamos",
-            "🔖 Por Marca"
-        ])
+        # ---------- PESTAÑAS DETALLADAS ----------
+        tab_tabla, tab_bodega, tab_grupo, tab_prestamos, tab_marca = st.tabs(
+            ["📋 Tabla Completa", "🏢 Por Bodega", "📦 Por Grupo", "🤝 Préstamos", "🔖 Por Marca"]
+        )
 
-        # 1. Pestaña Tabla Completa
+        # 1. TABLA COMPLETA
         with tab_tabla:
-            st.dataframe(df_filtrado, use_container_width=True, hide_index=True)
+            st.markdown(
+                """
+                <div class="panel">
+                    <h3>Inventario completo</h3>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            cols_orden = []
+            for col in ['marca', 'telefono', 'bodega', 'estado', 'grupo']:
+                if col in df_filtrado.columns and col not in cols_orden:
+                    cols_orden.append(col)
+            cols_orden += [c for c in df_filtrado.columns if c not in cols_orden]
+            st.dataframe(df_filtrado[cols_orden], use_container_width=True, hide_index=True)
 
-        # 2. Pestaña Por Bodega
+        # 2. POR BODEGA
         with tab_bodega:
-            st.markdown("### Resumen por Bodega")
+            st.markdown(
+                """
+                <div class="panel">
+                    <h3>Distribución por bodega y estado</h3>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
             if 'bodega' in df_filtrado.columns:
-                resumen_bodega = df_filtrado.groupby(['bodega', 'estado']).size().unstack(fill_value=0)
-                st.dataframe(resumen_bodega, use_container_width=True)
-                st.bar_chart(df_filtrado['bodega'].value_counts())
+                colg1, colg2 = st.columns([3, 2])
+                with colg1:
+                    st.bar_chart(df_filtrado['bodega'].value_counts(), color="#10b981")
+                with colg2:
+                    resumen_bodega = df_filtrado.groupby(['bodega', 'estado']).size().unstack(fill_value=0)
+                    st.dataframe(resumen_bodega, use_container_width=True)
 
-        # 3. Pestaña Por Grupo
+        # 3. POR GRUPO
         with tab_grupo:
-            st.markdown("### Resumen por Grupo / Categoría")
+            st.markdown(
+                """
+                <div class="panel">
+                    <h3>Resumen por grupo / categoría</h3>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
             if 'grupo' in df_filtrado.columns:
-                resumen_grupo = df_filtrado['grupo'].value_counts().reset_index()
-                resumen_grupo.columns = ['Grupo', 'Cantidad']
-                st.dataframe(resumen_grupo, use_container_width=True, hide_index=True)
+                colg1, colg2 = st.columns([2, 3])
+                with colg1:
+                    resumen_grupo = df_filtrado['grupo'].value_counts().reset_index()
+                    resumen_grupo.columns = ['Grupo', 'Cantidad']
+                    st.dataframe(resumen_grupo, use_container_width=True, hide_index=True)
+                with colg2:
+                    st.bar_chart(df_filtrado['grupo'].value_counts(), color="#f59e0b")
 
-        # 4. Pestaña Préstamos
+        # 4. PRÉSTAMOS
         with tab_prestamos:
-            st.markdown("### Equipos en Estado 'Prestado'")
+            st.markdown(
+                """
+                <div class="panel">
+                    <h3>Equipos en estado "Prestado"</h3>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
             if 'estado' in df_filtrado.columns:
                 df_prestados = df_filtrado[df_filtrado['estado'] == 'Prestado']
                 if not df_prestados.empty:
-                    cols_prestamo = [c for c in ['bodega', 'telefono', 'serial', 'nombres', 'apellidos', 'fec_vencimiento'] if c in df_prestados.columns]
+                    cols_prestamo = [
+                        c for c in ['bodega', 'telefono', 'serial', 'nombres', 'apellidos', 'fec_vencimiento']
+                        if c in df_prestados.columns
+                    ]
                     st.dataframe(df_prestados[cols_prestamo], use_container_width=True, hide_index=True)
                 else:
                     st.info("No hay equipos prestados en el filtro seleccionado.")
 
-        # 5. Pestaña Por Marca
+        # 5. POR MARCA
         with tab_marca:
-            st.markdown("### Filtrar por Marca")
+            st.markdown(
+                """
+                <div class="panel">
+                    <h3>Análisis por marca</h3>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
             if 'marca' in df_filtrado.columns:
-                # Lista de marcas disponibles (sin nulos) ordenadas
                 marcas_disponibles = sorted(df_filtrado['marca'].dropna().unique())
                 if marcas_disponibles:
-                    marca_seleccionada = st.selectbox("Selecciona una marca:", marcas_disponibles)
+                    col_sel, col_sp = st.columns([1, 2])
+                    with col_sel:
+                        marca_seleccionada = st.selectbox("Selecciona una marca:", marcas_disponibles)
                     df_marca = df_filtrado[df_filtrado['marca'] == marca_seleccionada]
                     total_referencias = df_marca['telefono'].nunique()
                     total_registros = len(df_marca)
-                    
-                    col1, col2 = st.columns(2)
-                    col1.metric("Cantidad de registros", total_registros)
-                    col2.metric("Referencias únicas (modelos)", total_referencias)
-                    
-                    st.subheader(f"📱 Modelos de {marca_seleccionada}")
-                    # Mostrar tabla con referencias únicas y sus cantidades
-                    resumen_modelos = df_marca['telefono'].value_counts().reset_index()
-                    resumen_modelos.columns = ['Teléfono', 'Cantidad']
-                    st.dataframe(resumen_modelos, use_container_width=True, hide_index=True)
+
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        tarjeta_kpi("📱", "Cantidad de registros", f"{total_registros:,}", "#2563eb", "Unidades")
+                    with c2:
+                        tarjeta_kpi("🧩", "Referencias únicas (modelos)", f"{total_referencias:,}", "#8b5cf6", "Modelos")
+
+                    m1, m2 = st.columns([3, 2])
+                    with m1:
+                        resumen_modelos = df_marca['telefono'].value_counts().reset_index()
+                        resumen_modelos.columns = ['Teléfono', 'Cantidad']
+                        st.dataframe(resumen_modelos, use_container_width=True, hide_index=True)
+                    with m2:
+                        st.subheader(f"Top modelos de {marca_seleccionada}")
+                        st.bar_chart(df_marca['telefono'].value_counts().head(10), color="#10b981")
                 else:
                     st.info("No hay marcas clasificadas en los datos actuales.")
             else:
                 st.warning("La columna 'marca' no está disponible.")
 
-        # --- BOTÓN DESCARGAR A CELULAR ---
+        # ---------- DESCARGA ----------
         st.markdown("---")
+        st.markdown(
+            """
+            <div class="panel">
+                <h3>📥 Exportar resultado</h3>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
         csv_descarga = df_filtrado.to_csv(index=False, sep='|').encode('utf-8')
         st.download_button(
-            label="📥 Descargar este filtro a mi celular (CSV '|')",
+            label="📲 Descargar este filtro a mi celular (CSV '|')",
             data=csv_descarga,
             file_name="Equipos_Sin_Ventas_Filtrado.csv",
-            mime="text/csv"
+            mime="text/csv",
+            use_container_width=False,
+        )
+
+        # ---------- FOOTER ----------
+        generado = time.strftime("%d/%m/%Y · %H:%M")
+        st.markdown(
+            f"""
+            <div class="footer">
+                Dashboard LEFCOM · Datos generados el {generado} · La información se recarga cada 6 horas
+            </div>
+            """,
+            unsafe_allow_html=True,
         )
 
     except Exception as e:
