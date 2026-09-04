@@ -419,7 +419,7 @@ with st.sidebar:
         """
         <div class="sidebar-brand">
             <div class="logo">📱</div>
-            <h3>LEFCOM Inventory</h3>
+            <h3>LEFCOM Inventario</h3>
             <p>Control de equipos sin ventas</p>
         </div>
         """,
