@@ -521,35 +521,6 @@ with st.spinner("Conectando con LEFCOM y procesando archivo..."):
         with k4:
             tarjeta_kpi("🔖", "Marcas detectadas", f"{marcas_cant:,}", "#10b981", "Clasificación")
 
-        # ---------- FILA DE RESUMEN ----------
-        r1, r2 = st.columns(2)
-        with r1:
-            st.markdown(
-                """
-                <div class="panel">
-                    <h3>📊 Equipos por estado</h3>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-            if 'estado' in df_filtrado.columns:
-                st.bar_chart(df_filtrado['estado'].value_counts(), color="#2563eb")
-            else:
-                st.info("Columna 'estado' no disponible.")
-        with r2:
-            st.markdown(
-                """
-                <div class="panel">
-                    <h3>🧭 Equipos por grupo</h3>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-            if 'grupo' in df_filtrado.columns:
-                st.bar_chart(df_filtrado['grupo'].value_counts(), color="#8b5cf6")
-            else:
-                st.info("Columna 'grupo' no disponible.")
-
         st.markdown("---")
 
         # ---------- PESTAÑAS DETALLADAS ----------
