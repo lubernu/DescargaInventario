@@ -97,8 +97,8 @@ def login_lefcom(driver, usuario, password):
     time.sleep(2)
 
 
-# --- CACHÉ CONFIGURADO A 1 HORA (3600 SEGUNDOS) ---
-@st.cache_data(ttl=3600, show_spinner=False)
+# --- CACHÉ CONFIGURADO A 6 HORA (21600 SEGUNDOS) ---
+@st.cache_data(ttl=21600, show_spinner=False)
 def obtener_y_procesar_inventario(usuario, password):
     limpiar_carpeta_descargas(DOWNLOAD_DIR)
     driver = iniciar_driver(DOWNLOAD_DIR)
