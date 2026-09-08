@@ -2,12 +2,10 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Instalamos Chromium, su driver y TODAS las librerías de sistema necesarias 
-# para que Selenium no falle con el error 127 en imágenes "slim"
+# 1. Instalación de Chromium, driver y librerías gráficas necesarias
 RUN apt-get update && apt-get install -y --no-install-recommends \
     chromium \
     chromium-driver \
-    # Librerías críticas para Chromium en entornos headless/slim:
     libnss3 \
     libnspr4 \
     libatk1.0-0 \
@@ -26,11 +24,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-liberation \
     && rm -rf /var/lib/apt/lists/*
 
-# Instalamos dependencias de Python
+# 2. VERIFICACIÓN DE DEBUG (Esto aparecerá en los logs de Streamlit)
+RUN echo "=== VERIFICANDO INSTALACIÓN ===" && \
+    chromium --version && \
+    chromedriver --version && \
+    ls -l /usr/bin/chromedriver
+
+# 3. Instalación de dependencias de Python
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copiamos el código
+# 4. Copiar código
 COPY . .
 
 EXPOSE 8501
