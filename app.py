@@ -12,7 +12,6 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import NoSuchElementException, TimeoutException
-from webdriver_manager.chrome import ChromeDriverManager
 
 # --- CONFIGURACIÓN STREAMLIT ---
 st.set_page_config(
@@ -43,22 +42,21 @@ def limpiar_carpeta_descargas(folder):
             except Exception:
                 pass
 
-
 def iniciar_driver(folder_descargas):
-    """Inicia Chromium en modo Headless apto para Streamlit Cloud (Linux/Docker)."""
+    """Inicia Chromium en modo Headless usando EXCLUSIVAMENTE el driver del sistema."""
     chrome_options = Options()
     
-    # 1. Argumentos esenciales para entornos en la nube (Docker/Streamlit)
-    chrome_options.add_argument("--headless=new")          # Nuevo modo headless, más estable
-    chrome_options.add_argument("--no-sandbox")            # Obligatoria en contenedores
-    chrome_options.add_argument("--disable-dev-shm-usage") # Obligatoria para evitar fallos de memoria
-    chrome_options.add_argument("--disable-gpu")           # Previene errores de renderizado en Linux
-    chrome_options.add_argument("--window-size=1920,1080") # Evita que algunos elementos web se oculten
+    # Argumentos obligatorios para la nube
+    chrome_options.add_argument("--headless")          # Usamos --headless clásico por compatibilidad
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--window-size=1920,1080")
     
-    # 2. CRÍTICO: Indicar explícitamente dónde está el binario de Chromium en Debian 12
+    # Rutas exactas en Debian 12 (Bookworm)
     chrome_options.binary_location = "/usr/bin/chromium"
 
-    # 3. Preferencias de descarga
+    # Preferencias de descarga
     prefs = {
         "download.default_directory": folder_descargas,
         "download.prompt_for_download": False,
@@ -67,21 +65,18 @@ def iniciar_driver(folder_descargas):
     }
     chrome_options.add_experimental_option("prefs", prefs)
 
-    # 4. Búsqueda del driver en rutas típicas de Linux
-    rutas_driver = [
-        "/usr/bin/chromedriver",          # ✅ Ruta exacta en Debian 12 (Bookworm)
-        "/usr/lib/chromium-browser/chromedriver", # Ruta antigua (Debian 11 / Ubuntu)
-        "/usr/lib/chromium/chromedriver",         # Otra variante posible
-    ]
+    # FORZAMOS el uso del driver del sistema. 
+    # En Debian, apt install chromium-driver lo pone exactamente aquí:
+    ruta_driver_sistema = "/usr/bin/chromedriver"
+    
+    if not os.path.exists(ruta_driver_sistema):
+        raise FileNotFoundError(f"❌ El driver del sistema no se encontró en {ruta_driver_sistema}. Revisa el Dockerfile.")
 
-    for ruta in rutas_driver:
-        if os.path.exists(ruta):
-            print(f"✅ Driver encontrado en: {ruta}")
-            return webdriver.Chrome(service=Service(ruta), options=chrome_options)
-
-    # 5. Fallback (Solo se ejecutará si fallan todas las rutas anteriores)
-    print("⚠️ No se encontró el driver del sistema. Intentando descargar con ChromeDriverManager...")
-    return webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
+    print(f"✅ Usando driver del sistema en: {ruta_driver_sistema}")
+    
+    # Iniciamos el driver SIN webdriver-manager
+    service = Service(ruta_driver_sistema)
+    return webdriver.Chrome(service=service, options=chrome_options)
 
 def login_lefcom(driver, usuario, password):
     driver.get(URL_LEFCOM)
