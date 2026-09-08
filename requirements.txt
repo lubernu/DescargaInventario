@@ -1,6 +1,5 @@
 streamlit
 pandas
+requests
+numpy
 openpyxl
-selenium
-webdriver-manager
-starlette<1.4.0
