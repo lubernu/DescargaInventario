@@ -45,14 +45,20 @@ def limpiar_carpeta_descargas(folder):
 
 
 def iniciar_driver(folder_descargas):
-    """Inicia Chromium en modo Headless apto para Streamlit Cloud (Linux)."""
+    """Inicia Chromium en modo Headless apto para Streamlit Cloud (Linux/Docker)."""
     chrome_options = Options()
-    chrome_options.add_argument("--headless=new")
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("--disable-gpu")
-    chrome_options.add_argument("--window-size=1920,1080")
+    
+    # 1. Argumentos esenciales para entornos en la nube (Docker/Streamlit)
+    chrome_options.add_argument("--headless=new")          # Nuevo modo headless, más estable
+    chrome_options.add_argument("--no-sandbox")            # Obligatoria en contenedores
+    chrome_options.add_argument("--disable-dev-shm-usage") # Obligatoria para evitar fallos de memoria
+    chrome_options.add_argument("--disable-gpu")           # Previene errores de renderizado en Linux
+    chrome_options.add_argument("--window-size=1920,1080") # Evita que algunos elementos web se oculten
+    
+    # 2. CRÍTICO: Indicar explícitamente dónde está el binario de Chromium en Debian 12
+    chrome_options.binary_location = "/usr/bin/chromium"
 
+    # 3. Preferencias de descarga
     prefs = {
         "download.default_directory": folder_descargas,
         "download.prompt_for_download": False,
@@ -61,18 +67,21 @@ def iniciar_driver(folder_descargas):
     }
     chrome_options.add_experimental_option("prefs", prefs)
 
+    # 4. Búsqueda del driver en rutas típicas de Linux
     rutas_driver = [
-        "/usr/bin/chromedriver",
-        "/usr/lib/chromium-browser/chromedriver",
-        "/usr/lib/chromium/chromedriver",
+        "/usr/bin/chromedriver",          # ✅ Ruta exacta en Debian 12 (Bookworm)
+        "/usr/lib/chromium-browser/chromedriver", # Ruta antigua (Debian 11 / Ubuntu)
+        "/usr/lib/chromium/chromedriver",         # Otra variante posible
     ]
 
     for ruta in rutas_driver:
         if os.path.exists(ruta):
+            print(f"✅ Driver encontrado en: {ruta}")
             return webdriver.Chrome(service=Service(ruta), options=chrome_options)
 
+    # 5. Fallback (Solo se ejecutará si fallan todas las rutas anteriores)
+    print("⚠️ No se encontró el driver del sistema. Intentando descargar con ChromeDriverManager...")
     return webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
-
 
 def login_lefcom(driver, usuario, password):
     driver.get(URL_LEFCOM)
