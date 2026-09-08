@@ -4,7 +4,8 @@ import glob
 import pandas as pd
 import numpy as np
 import streamlit as st
-
+import shutil
+import subprocess
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
@@ -43,17 +44,17 @@ def limpiar_carpeta_descargas(folder):
                 pass
 
 def iniciar_driver(folder_descargas):
-    """Inicia Chromium en modo Headless usando EXCLUSIVAMENTE el driver del sistema."""
+    """Inicia Chromium en modo Headless usando el driver del sistema de forma robusta."""
     chrome_options = Options()
     
-    # Argumentos obligatorios para la nube
-    chrome_options.add_argument("--headless")          # Usamos --headless clásico por compatibilidad
+    # Argumentos obligatorios para entornos en la nube / Docker
+    chrome_options.add_argument("--headless=new")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--window-size=1920,1080")
     
-    # Rutas exactas en Debian 12 (Bookworm)
+    # Ruta explícita del navegador en Debian 12
     chrome_options.binary_location = "/usr/bin/chromium"
 
     # Preferencias de descarga
@@ -65,19 +66,41 @@ def iniciar_driver(folder_descargas):
     }
     chrome_options.add_experimental_option("prefs", prefs)
 
-    # FORZAMOS el uso del driver del sistema. 
-    # En Debian, apt install chromium-driver lo pone exactamente aquí:
-    ruta_driver_sistema = "/usr/bin/chromedriver"
+    # 1. Intentar encontrar el driver automáticamente en el PATH del sistema
+    ruta_driver = shutil.which("chromedriver")
     
-    if not os.path.exists(ruta_driver_sistema):
-        raise FileNotFoundError(f"❌ El driver del sistema no se encontró en {ruta_driver_sistema}. Revisa el Dockerfile.")
+    # 2. Si no está en el PATH, buscar en rutas conocidas de Debian
+    if not ruta_driver:
+        rutas_posibles = [
+            "/usr/bin/chromedriver",
+            "/usr/lib/chromium/chromedriver",
+            "/usr/lib/chromium-browser/chromedriver"
+        ]
+        for ruta in rutas_posibles:
+            if os.path.exists(ruta):
+                ruta_driver = ruta
+                break
 
-    print(f"✅ Usando driver del sistema en: {ruta_driver_sistema}")
+    # 3. Si aún no se encuentra, lanzar un error con información de diagnóstico real
+    if not ruta_driver:
+        try:
+            # Listar archivos que empiecen con 'chrom' en /usr/bin para ver qué instaló el sistema
+            lista_archivos = subprocess.run(["ls", "-l", "/usr/bin/chrom*"], capture_output=True, text=True).stdout
+        except Exception:
+            lista_archivos = "No se pudo listar el directorio."
+            
+        raise FileNotFoundError(
+            f"❌ No se encontró 'chromedriver' en el sistema.\n"
+            f"Archivos similares encontrados en /usr/bin/:\n{lista_archivos}\n"
+            f"Revisa que el Dockerfile se esté ejecutando correctamente."
+        )
+
+    print(f"✅ Usando driver del sistema en: {ruta_driver}")
     
-    # Iniciamos el driver SIN webdriver-manager
-    service = Service(ruta_driver_sistema)
+    # Iniciamos el driver
+    service = Service(ruta_driver)
     return webdriver.Chrome(service=service, options=chrome_options)
-
+    
 def login_lefcom(driver, usuario, password):
     driver.get(URL_LEFCOM)
     wait = WebDriverWait(driver, 15)
