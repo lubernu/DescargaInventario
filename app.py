@@ -1,18 +1,12 @@
 import os
+import re
+import io
 import time
-import glob
+import hashlib
 import pandas as pd
 import numpy as np
 import streamlit as st
-import shutil
-import subprocess
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import NoSuchElementException, TimeoutException
+import requests
 
 # --- CONFIGURACIÓN STREAMLIT ---
 st.set_page_config(
@@ -22,201 +16,152 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-DOWNLOAD_DIR = os.path.abspath("./downloads")
-os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-
-URL_LEFCOM = "https://lefcom.solucionesig.com.co/entrada.php"
+URL_BASE = "https://lefcom.solucionesig.com.co"
+URL_LOGIN = f"{URL_BASE}/login.php"
+URL_MENU = f"{URL_BASE}/menu_principal.php"
+URL_REPORTE = f"{URL_BASE}/reportes/reporte_equipos_sin_ventas2.php"
+URL_DESCARGAR = f"{URL_BASE}/common/Descargar.php?url=../common/Equipos_sin_ventas.csv&archivo=Equipos_sin_ventas.csv"
 
 
 # ================================================================
-# BACKEND (lógica de automatización y procesamiento, sin cambios)
+# BACKEND (conexión HTTP directa a LEFCOM, sin Selenium)
 # ================================================================
 
-def limpiar_carpeta_descargas(folder):
-    """Elimina todos los archivos temporales para evitar acumular residuos en el servidor."""
-    if os.path.exists(folder):
-        for archivo in os.listdir(folder):
-            ruta_completa = os.path.join(folder, archivo)
-            try:
-                if os.path.isfile(ruta_completa):
-                    os.remove(ruta_completa)
-            except Exception:
-                pass
+def crear_sesion():
+    """Crea una sesión HTTP con headers compatibles con LEFCOM."""
+    session = requests.Session()
+    session.headers.update({
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'es-CO,es;q=0.9,en;q=0.8',
+        'Connection': 'keep-alive',
+    })
+    return session
 
-def iniciar_driver(folder_descargas):
-    """Inicia Chromium en modo Headless usando el driver del sistema de forma robusta."""
-    chrome_options = Options()
-    
-    # Argumentos obligatorios para entornos en la nube / Docker
-    chrome_options.add_argument("--headless=new")
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("--disable-gpu")
-    chrome_options.add_argument("--window-size=1920,1080")
-    
-    # Ruta explícita del navegador en Debian 12
-    chrome_options.binary_location = "/usr/bin/chromium"
 
-    # Preferencias de descarga
-    prefs = {
-        "download.default_directory": folder_descargas,
-        "download.prompt_for_download": False,
-        "download.directory_upgrade": True,
-        "safebrowsing.enabled": True,
+def login_lefcom(session, usuario, password):
+    """Login al sistema LEFCOM vía HTTP POST (el password se envía en MD5)."""
+    password_md5 = hashlib.md5(password.encode('utf-8')).hexdigest()
+
+    login_data = {
+        'login': usuario,
+        'passw': password_md5,
+        'boton-entrar': 'Entrar',
+        'status': '',
     }
-    chrome_options.add_experimental_option("prefs", prefs)
 
-    # 1. Intentar encontrar el driver automáticamente en el PATH del sistema
-    ruta_driver = shutil.which("chromedriver")
-    
-    # 2. Si no está en el PATH, buscar en rutas conocidas de Debian
-    if not ruta_driver:
-        rutas_posibles = [
-            "/usr/bin/chromedriver",
-            "/usr/lib/chromium/chromedriver",
-            "/usr/lib/chromium-browser/chromedriver"
-        ]
-        for ruta in rutas_posibles:
-            if os.path.exists(ruta):
-                ruta_driver = ruta
-                break
+    resp = session.post(
+        URL_LOGIN,
+        data=login_data,
+        headers={'Referer': f"{URL_BASE}/entrada.php", 'Origin': URL_BASE},
+        allow_redirects=True,
+        timeout=30,
+    )
 
-    # 3. Si aún no se encuentra, lanzar un error con información de diagnóstico real
-    if not ruta_driver:
-        try:
-            # Listar archivos que empiecen con 'chrom' en /usr/bin para ver qué instaló el sistema
-            lista_archivos = subprocess.run(["ls", "-l", "/usr/bin/chrom*"], capture_output=True, text=True).stdout
-        except Exception:
-            lista_archivos = "No se pudo listar el directorio."
-            
-        raise FileNotFoundError(
-            f"❌ No se encontró 'chromedriver' en el sistema.\n"
-            f"Archivos similares encontrados en /usr/bin/:\n{lista_archivos}\n"
-            f"Revisa que el Dockerfile se esté ejecutando correctamente."
+    if resp.status_code != 200 or 'menu_principal' not in resp.text.lower():
+        raise Exception(
+            "Login fallido: credenciales incorrectas o el sitio cambi\u00f3 su mecanismo. "
+            "Verifica LEFCOM_USER y LEFCOM_PASS en los Secrets."
         )
 
-    print(f"✅ Usando driver del sistema en: {ruta_driver}")
-    
-    # Iniciamos el driver
-    service = Service(ruta_driver)
-    return webdriver.Chrome(service=service, options=chrome_options)
-    
-def login_lefcom(driver, usuario, password):
-    driver.get(URL_LEFCOM)
-    wait = WebDriverWait(driver, 15)
 
-    username_field = wait.until(EC.presence_of_element_located((By.NAME, "login")))
-    username_field.clear()
-    username_field.send_keys(usuario)
+def descargar_reporte(session):
+    """Carga el reporte 'Equipos sin ventas' y descarga el CSV generado por LEFCOM."""
+    # 1. Disparar generación del reporte (mismo POST que hace el navegador al pulsar BUSCAR)
+    datos_reporte = {
+        'bodega': '',
+        'idbodega': '',
+        'idgrupo': '',
+        'cont_bot': '1',
+        'link': '/reportes/reporte_equipos_sin_ventas.php',
+    }
+    resp = session.post(
+        URL_REPORTE,
+        data=datos_reporte,
+        headers={'Referer': f"{URL_BASE}/reportes/reporte_equipos_sin_ventas.php", 'Origin': URL_BASE},
+        timeout=60,
+    )
+    if resp.status_code != 200:
+        raise Exception(f"No se pudo cargar el reporte (status {resp.status_code}).")
 
-    password_field = driver.find_element(By.NAME, "passw")
-    password_field.clear()
-    password_field.send_keys(password)
+    # 2. Descargar el CSV del export
+    resp_csv = session.get(
+        URL_DESCARGAR,
+        headers={'Referer': f"{URL_BASE}/reportes/reporte_equipos_sin_ventas2.php"},
+        timeout=60,
+    )
+    if resp_csv.status_code != 200 or not resp_csv.content:
+        raise Exception(f"No se pudo descargar el CSV (status {resp_csv.status_code}).")
 
-    try:
-        login_btn = driver.find_element(By.CSS_SELECTOR, "input[type='submit']")
-        login_btn.click()
-    except NoSuchElementException:
-        password_field.submit()
-
-    try:
-        WebDriverWait(driver, 3).until(EC.alert_is_present())
-        alert = driver.switch_to.alert
-        alert.accept()
-    except TimeoutException:
-        pass
-
-    time.sleep(2)
+    return resp_csv.content
 
 
 # --- CACHÉ CONFIGURADO A 6 HORAS (21600 SEGUNDOS) ---
 @st.cache_data(ttl=21600, show_spinner=False)
 def obtener_y_procesar_inventario(usuario, password):
-    limpiar_carpeta_descargas(DOWNLOAD_DIR)
-    driver = iniciar_driver(DOWNLOAD_DIR)
-    wait = WebDriverWait(driver, 25)
+    """Conecta a LEFCOM por HTTP, descarga el reporte y lo procesa."""
+    session = crear_sesion()
 
     try:
-        login_lefcom(driver, usuario, password)
+        login_lefcom(session, usuario, password)
+        contenido_csv = descargar_reporte(session)
+    except Exception as e:
+        raise Exception(f"Error conectando con LEFCOM: {e}")
 
-        try:
-            driver.execute_script("irmenu_or('reportes/reporte_equipos_sin_ventas.php');")
-        except Exception:
-            btn_reportes = wait.until(EC.element_to_be_clickable((By.XPATH, "//span[contains(text(), 'REPORTES')]")))
-            btn_reportes.click()
-            time.sleep(1)
-            link_equipos = wait.until(EC.element_to_be_clickable((By.XPATH, "//a[contains(@onclick, 'reporte_equipos_sin_ventas.php')]")))
-            link_equipos.click()
+    contenido = contenido_csv.decode('utf-8', errors='replace')
 
-        btn_buscar = wait.until(EC.element_to_be_clickable((By.XPATH, "//div[@id='send' and contains(text(), 'BUSCAR')]")))
-        btn_buscar.click()
+    try:
+        df = pd.read_csv(io.StringIO(contenido), sep='|', on_bad_lines='skip')
+    except Exception:
+        df = pd.read_csv(io.StringIO(contenido), sep=';', on_bad_lines='skip')
 
-        btn_exportar = wait.until(EC.element_to_be_clickable((By.XPATH, "//div[@id='send' and contains(text(), 'EXPORTAR TODO')]")))
-        btn_exportar.click()
+    if df.empty:
+        raise Exception("El reporte descargado no contiene datos.")
 
-        time.sleep(6)
+    df.columns = df.columns.str.strip()
+    df = df.dropna(how="all")
 
-        patron_busqueda = os.path.join(DOWNLOAD_DIR, "Equipos_sin_ventas*")
-        archivos_encontrados = glob.glob(patron_busqueda)
+    for col in df.select_dtypes(include="object").columns:
+        df[col] = df[col].astype(str).str.strip()
 
-        if not archivos_encontrados:
-            raise FileNotFoundError("No se encontró el archivo exportado en la carpeta de descargas.")
+    # CLASIFICACIÓN DE MARCA SEGÚN REGLAS DE NEGOCIO
+    if 'telefono' in df.columns and 'grupo' in df.columns:
+        primera_palabra = df['telefono'].str.split().str[0]
+        segunda_palabra = df['telefono'].str.split().str[1]
 
-        archivo_mas_reciente = max(archivos_encontrados, key=os.path.getctime)
+        condiciones = [
+            df['grupo'].eq('EQUIPOS EN CONSIGNACION'),
+            df['grupo'].eq('KIT PREPAGO INDIVIDUAL'),
+            df['grupo'].str.startswith('SIM', na=False),
+            df['grupo'].eq('ELECTRODOMESTICOS'),
+        ]
+        valores = [
+            primera_palabra,
+            segunda_palabra,
+            'SIM',
+            'ELECTRODOMESTICOS',
+        ]
 
-        try:
-            df = pd.read_csv(archivo_mas_reciente, sep='|', encoding='utf-8', on_bad_lines='skip')
-        except Exception:
-            df = pd.read_excel(archivo_mas_reciente)
+        df['marca'] = np.select(condiciones, valores, default=np.nan)
 
-        df.columns = df.columns.str.strip()
-        df = df.dropna(how="all")
+        df['marca'] = df['marca'].astype(str).str.upper().str.strip()
 
-        for col in df.select_dtypes(include="object").columns:
-            df[col] = df[col].astype(str).str.strip()
+        correcciones_marcas = {
+            'SAMSUN': 'SAMSUNG',
+            'SAMSUMG': 'SAMSUNG',
+            'SAMSUNGS': 'SAMSUNG',
+            'APP': 'APPLE',
+            'IPHONNE': 'APPLE',
+            'IPHONE': 'APPLE',
+            'MOTO': 'MOTOROLA',
+            'XIAOM': 'XIAOMI',
+        }
 
-        # CLASIFICACIÓN DE MARCA SEGÚN REGLAS DE NEGOCIO
-        if 'telefono' in df.columns and 'grupo' in df.columns:
-            primera_palabra = df['telefono'].str.split().str[0]
-            segunda_palabra = df['telefono'].str.split().str[1]
+        df['marca'] = df['marca'].replace(correcciones_marcas)
 
-            condiciones = [
-                df['grupo'].eq('EQUIPOS EN CONSIGNACION'),
-                df['grupo'].eq('KIT PREPAGO INDIVIDUAL'),
-                df['grupo'].str.startswith('SIM', na=False),
-                df['grupo'].eq('ELECTRODOMESTICOS'),
-            ]
-            valores = [
-                primera_palabra,
-                segunda_palabra,
-                'SIM',
-                'ELECTRODOMESTICOS',
-            ]
+        df['marca'] = df['marca'].replace({'NAN': np.nan, '': np.nan, 'NONE': np.nan})
 
-            df['marca'] = np.select(condiciones, valores, default=np.nan)
-
-            df['marca'] = df['marca'].astype(str).str.upper().str.strip()
-
-            correcciones_marcas = {
-                'SAMSUN': 'SAMSUNG',
-                'SAMSUMG': 'SAMSUNG',
-                'SAMSUNGS': 'SAMSUNG',
-                'APP': 'APPLE',
-                'IPHONNE': 'APPLE',
-                'IPHONE': 'APPLE',
-                'MOTO': 'MOTOROLA',
-                'XIAOM': 'XIAOMI',
-            }
-
-            df['marca'] = df['marca'].replace(correcciones_marcas)
-
-            df['marca'] = df['marca'].replace({'NAN': np.nan, '': np.nan, 'NONE': np.nan})
-
-        limpiar_carpeta_descargas(DOWNLOAD_DIR)
-        return df
-
-    finally:
-        driver.quit()
+    return df
 
 
 # ================================================================
